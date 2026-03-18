@@ -165,9 +165,10 @@ public:
         // }
 
         {
+            request.set_permission("compute.instances.list");
             auto* resource_path = request.add_resource_path();
-            resource_path->set_type("iam.serviceAccount.get");
-            resource_path->set_id("d26evl0a5g0aor6l9jon");
+            resource_path->set_type("resource-manager.folder");
+            resource_path->set_id("batcfrdb6fauarko319o");
         }
 
         AuthorizeResponse response;
