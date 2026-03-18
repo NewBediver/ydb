@@ -87,6 +87,7 @@ inline std::shared_ptr<grpc::ChannelInterface> CreateChannelInterface(const TGRp
         channelCredentials = grpc::InsecureChannelCredentials();
     }
     if (config.UseXds) {
+        Cout << "Using XdsCredentials" << Endl;
         channelCredentials = grpc::XdsCredentials(channelCredentials);
     }
     return grpc::CreateCustomChannel(grpc::string(config.Locator), channelCredentials, args);
