@@ -119,7 +119,7 @@ NYdbGrpc::TGRpcClientConfig InitGrpcConfig(const grpc_client_settings& settings)
 
 class SimpleGrpcClient {
 public:
-    SimpleGrpcClient(NKikimrConfig::TAppConfig config) : settings{
+    SimpleGrpcClient(NKikimrConfig::TAppConfig config) : grpc_config{InitGrpcConfig(grpc_client_settings{
         .Endpoint = config.GetAuthConfig().GetAccessServiceEndpoint(),
         .CertificateRootCA = TUnbufferedFileInput(config.GetAuthConfig().GetPathToRootCA()).ReadAll(),
         .GrpcKeepAliveTimeMs = 10000,
@@ -132,7 +132,7 @@ public:
             {"user-agent", "simple-grpc-client/1.0"}
         },
         .SslTargetNameOverride = config.GetAuthConfig().GetAccessServiceSslTargetNameOverride(),
-    } {}
+    })} {}
 
     // Простой метод для аутентификации
     std::string Authorize(const std::string& iam_token) {
@@ -140,8 +140,9 @@ public:
         using TRequestType = yandex::cloud::priv::servicecontrol::v1::AuthorizeRequest;
         using TResponseType = yandex::cloud::priv::servicecontrol::v1::AuthorizeResponse;
 
-        const auto grpc_config = InitGrpcConfig(settings);
-        auto grpc_channel = grpc_client.CreateGRpcServiceConnection<yandex::cloud::priv::servicecontrol::v1::AccessService>(grpc_config);
+        if (!connection) {
+          connection = grpc_client.CreateGRpcServiceConnection<yandex::cloud::priv::servicecontrol::v1::AccessService>(grpc_config);
+        }
 
         TRequestType request;
         request.set_iam_token(iam_token);
@@ -184,19 +185,22 @@ public:
 
         NYdbGrpc::TCallMeta meta;
         meta.Timeout = grpc_config.Timeout ? NYdb::TDeadline::SafeDurationCast(grpc_config.Timeout) : NYdb::TDeadline::Duration::max();
-        grpc_channel->DoRequest(request, std::move(callback), Request, meta);
+        connection->DoRequest(request, std::move(callback), Request, meta);
         return promise.GetFuture().GetValueSync();
         // return "Empty";
     }
 
 private:
-    grpc_client_settings settings;
     NYdbGrpc::TGRpcClientLow grpc_client;
+    NYdbGrpc::TGRpcClientConfig grpc_config;
+    std::unique_ptr<NYdbGrpc::TServiceConnection<AccessService>> connection;
 };
 
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::cout << "GRPC verion: " << grpc::Version() << std::endl;
+
     if (argc < 3) {
         std::cerr << argv[0] << " <yaml_config> <iam_token>" << std::endl;
         return 1;
@@ -214,7 +218,10 @@ int main(int argc, char** argv) {
 
     try {
         SimpleGrpcClient client(config);
-        std::cout << client.Authorize(iam_token) << std::endl;
+        while (true) {
+            std::cout << client.Authorize(iam_token) << std::endl;
+            sleep(5);
+        }
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Exception: " << e.what() << std::endl;
