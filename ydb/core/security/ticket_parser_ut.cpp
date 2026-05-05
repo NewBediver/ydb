@@ -92,6 +92,7 @@ public:
         Login,
         ApiKey,
         Certificate,
+        ExternalIdp,
     };
 
     using TTokenRecord = TBase::TTokenRecordBase;

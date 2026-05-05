@@ -63,6 +63,7 @@ message TAuthConfig {
     optional string AccessServiceSslTargetNameOverride = 87;
     optional string UserAccountServiceSslTargetNameOverride = 88;
     optional string ServiceAccountServiceSslTargetNameOverride = 89;
+    optional TExternalIdpConfig ExternalIdp = 90;
 }
 
 message TUserRegistryConfig {
@@ -185,4 +186,40 @@ message TTokenManager {
     optional string RefreshCheckPeriod = 2 [default = "1s"];
     optional TVmMetadataProvider VmMetadataProvider = 3;
     optional TTokenAgentProvider TokenAgentProvider = 4;
+}
+
+message TExternalIdpConfig {
+    message TExternalIdpSettings {
+        // Domain suffix appended to user/group SIDs (e.g. "external-idp")
+        optional string Domain = 1 [default = "external-idp"];
+
+        // OpenID Connect Discovery URL (e.g. https://idp.example.com/.well-known/openid-configuration)
+        // jwks_url, issuer and other metadata will be fetched automatically
+        optional string DiscoveryUrl = 2;
+
+        // Expected issuer (iss) claim value in the JWT token
+        optional string Issuer = 3;
+
+        // Expected audience (aud) claim value in the JWT token
+        // The database path will be checked by default, so this value must also be present in aud
+        optional string Audience = 4;
+
+        // JWT claim name to use as the user subject identifier (default: "sub")
+        optional string SubjectClaimName = 5 [default = "sub"];
+
+        // JWT claim name to use as the list of groups (default: "groups")
+        optional string GroupsClaimName = 6 [default = "groups"];
+
+        // How often to refresh the JWKS keys from the IdP
+        optional string JwksRefreshPeriod = 7 [default = "1h"];
+
+        // Allowed clock skew for JWT validation
+        optional string AllowedClockSkew = 8 [default = "5s"];
+
+        // Path to root CA certificate for TLS connections to the IdP
+        // If is not set, global PathToRootCA will be used
+        optional string PathToRootCA = 9;
+    }
+
+    repeated TExternalIdpSettings Settings = 1;
 }

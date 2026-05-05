@@ -128,6 +128,7 @@ protected:
         static constexpr const char* NebiusAccessServiceAuthType = "NebiusAccessService";
         static constexpr const char* ApiKeyAuthType = "ApiKey";
         static constexpr const char* CertificateAuthType = "Certificate";
+        static constexpr const char* ExternalIdpAuthType = "ExternalIdp";
 
         TString Ticket;
         typename TDerived::ETokenType TokenType = TDerived::ETokenType::Unknown;
@@ -225,6 +226,8 @@ protected:
                     return ApiKeyAuthType;
                 case TDerived::ETokenType::Certificate:
                     return CertificateAuthType;
+                case TDerived::ETokenType::ExternalIdp:
+                    return ExternalIdpAuthType;
             }
         }
 
@@ -234,6 +237,7 @@ protected:
                 case TDerived::ETokenType::Certificate:
                     return false;
                 case TDerived::ETokenType::Login:
+                case TDerived::ETokenType::ExternalIdp:
                     return true;
                 default:
                     return Signature.AccessKeyId.empty();
@@ -281,6 +285,9 @@ protected:
             if (TokenType == TDerived::ETokenType::Login) {
                 return NLogin::TLoginProvider::SanitizeJwtToken(Ticket);
             }
+            if (TokenType == TDerived::ETokenType::ExternalIdp) {
+                return NLogin::TLoginProvider::SanitizeJwtToken(Ticket);
+            }
             return MaskTicket(Ticket);
         }
     };
@@ -302,11 +309,19 @@ protected:
         if (record.TokenType == TDerived::ETokenType::Login) {
             return record.ExpireTime;
         }
+        if (record.TokenType == TDerived::ETokenType::ExternalIdp) {
+            return record.ExpireTime;
+        }
         return now + ExpireTime;
     }
 
     bool AccessServiceEnabled() const {
         return (AccessServiceValidatorV1 && AccessServiceValidatorV2) || NebiusAccessServiceValidator;
+    }
+
+    bool ExternalIdpEnabled() const {
+        // TODO: Change to Validator check
+        return Config.HasExternalIdp() && !Config.GetExternalIdp().GetSettings().empty();
     }
 
     bool ApiKeyEnabled() const {
@@ -328,6 +343,7 @@ private:
     ::NMonitoring::TDynamicCounters::TCounterPtr CounterTicketsCertificate;
     ::NMonitoring::TDynamicCounters::TCounterPtr CounterTicketsLogin;
     ::NMonitoring::TDynamicCounters::TCounterPtr CounterTicketsAS;
+    ::NMonitoring::TDynamicCounters::TCounterPtr CounterTicketsExternalIdp;
     ::NMonitoring::TDynamicCounters::TCounterPtr CounterTicketsCacheHit;
     ::NMonitoring::TDynamicCounters::TCounterPtr CounterTicketsCacheMiss;
     ::NMonitoring::TDynamicCounters::TCounterPtr CounterWrongPeernameFormat;
@@ -780,6 +796,20 @@ private:
             userToken->AddGroupSID(group);
         }
         SetToken(key, record, userToken);
+        return true;
+    }
+
+    template <typename TTokenRecord>
+    bool CanInitTokenFromJWT(const TString& /* key */, TTokenRecord& record) {
+        if (record.TokenType != TDerived::ETokenType::ExternalIdp) {
+            return false;
+        }
+        CounterTicketsExternalIdp->Inc();
+
+        // TODO: ExternalIdp tokens will be validated via JWKs in a future implementation.
+        // For now, mark as unsupported until the JWT validation logic is added.
+        record.Error.Message = "External IdP token validation is not yet implemented";
+        record.Error.Retryable = false;
         return true;
     }
 
@@ -1652,7 +1682,7 @@ private:
                     html << "<div>";
                     html << "<table class='ticket-parser-proplist'>";
                     html << "<tr><td>Ticket</td><td>" << record.GetMaskedTicket() << "</td></tr>";
-                    if (record.TokenType == TDerived::ETokenType::Login) {
+                    if (record.TokenType == TDerived::ETokenType::Login || record.TokenType == TDerived::ETokenType::ExternalIdp) {
                         TVector<TString> tokenData;
                         Split(record.Ticket, ".", tokenData);
                         if (tokenData.size() > 1) {
@@ -1762,6 +1792,9 @@ protected:
             } else {
                 return TDerived::ETokenType::Unsupported;
             }
+        }
+        if (tokenType == "Bearer" && ExternalIdpEnabled()) {
+            return TDerived::ETokenType::ExternalIdp;
         }
         if (tokenType == "Bearer" || tokenType == "IAM") {
             if (AccessServiceEnabled()) {
@@ -1880,7 +1913,8 @@ protected:
 
         if (CanInitBuiltinToken(key, record) ||
             CanInitLoginToken(key, record) ||
-            CanInitTokenFromCertificate(key, record)) {
+            CanInitTokenFromCertificate(key, record) ||
+            CanInitTokenFromJWT(key, record)) {
             return;
         }
 
@@ -2148,6 +2182,7 @@ protected:
         html << "<tr><td>User Account Service</td><td>" << HtmlBool((bool)UserAccountService) << "</td></tr>";
         html << "<tr><td>Service Account Service</td><td>" << HtmlBool((bool)ServiceAccountService) << "</td></tr>";
         html << "<tr><td>Nebius Access Service</td><td>" << HtmlBool((bool)NebiusAccessServiceValidator) << "</td></tr>";
+        html << "<tr><td>External IdP</td><td>" << HtmlBool(ExternalIdpEnabled()) << "</td></tr>"; // TODO: Change to Validator
     }
 
     template <typename TTokenRecord>
@@ -2177,6 +2212,7 @@ protected:
         CounterTicketsCertificate = counters->GetCounter("TicketsCertificate", true);
         CounterTicketsLogin = counters->GetCounter("TicketsLogin", true);
         CounterTicketsAS = counters->GetCounter("TicketsAS", true);
+        CounterTicketsExternalIdp = counters->GetCounter("TicketsExternalIdp", true);
         CounterTicketsCacheHit = counters->GetCounter("TicketsCacheHit", true);
         CounterTicketsCacheMiss = counters->GetCounter("TicketsCacheMiss", true);
         CounterWrongPeernameFormat = counters->GetCounter("WrongPeernameFormat", true);
@@ -2268,6 +2304,22 @@ protected:
 
         if (Config.GetUseLoginProvider()) {
             UseLoginProvider = true;
+        }
+
+        if (Config.HasExternalIdp() && !Config.GetExternalIdp().GetSettings().empty()) {
+            BLOG_D("External IdP authentication is enabled"
+                << " Number of IdPs: " << Config.GetExternalIdp().GetSettings().size());
+            for (ssize_t idx = 0; idx < Config.GetExternalIdp().GetSettings().size(); ++idx) {
+                const auto& setting = Config.GetExternalIdp().GetSettings()[idx];
+                BLOG_D("IdP #" << idx
+                        << " Domain: " << setting.GetDomain()
+                        << " Issuer: " << setting.GetIssuer()
+                        << " Audience: " << setting.GetAudience()
+                        << " SubjectClaimName: " << setting.GetSubjectClaimName()
+                        << " GroupsClaimName: " << setting.GetGroupsClaimName()
+                        << " JwksRefreshPeriod: " << setting.GetJwksRefreshPeriod()
+                        << " AllowedClockSkew: " << setting.GetAllowedClockSkew());
+            }
         }
     }
 
