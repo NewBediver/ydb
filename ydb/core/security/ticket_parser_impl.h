@@ -8,6 +8,7 @@
 #include <ydb/core/base/ticket_parser.h>
 #include <ydb/core/mon/mon.h>
 #include <ydb/core/security/certificate_check/cert_check.h>
+#include <ydb/core/security/external_idp/external_idp_provider.h>
 #include <ydb/core/security/ldap_auth_provider/ldap_auth_provider.h>
 #include <ydb/core/security/token_manager/token_manager.h>
 #include <ydb/core/security/util/net.h>
@@ -362,6 +363,7 @@ private:
     TActorId UserAccountService;
     TActorId ServiceAccountService;
     TActorId NebiusAccessServiceValidator;
+    TActorId ExternalIdpProvider;
     TString UserAccountDomain;
     TString AccessServiceDomain;
     TString ServiceDomain;
@@ -800,16 +802,22 @@ private:
     }
 
     template <typename TTokenRecord>
-    bool CanInitTokenFromJWT(const TString& /* key */, TTokenRecord& record) {
+    bool CanInitTokenFromJWT(const TString& key, TTokenRecord& record) {
         if (record.TokenType != TDerived::ETokenType::ExternalIdp) {
             return false;
         }
         CounterTicketsExternalIdp->Inc();
 
-        // TODO: ExternalIdp tokens will be validated via JWKs in a future implementation.
-        // For now, mark as unsupported until the JWT validation logic is added.
-        record.Error.Message = "External IdP token validation is not yet implemented";
-        record.Error.Retryable = false;
+        if (!ExternalIdpProvider) {
+            SetError(key, record, {.Message = "ExternalIdpProvider is not initialized", .Retryable = false});
+            return false;
+        }
+
+        BLOG_TRACE("CanInitTokenFromJWT, ticket " << MaskTicket(record.Ticket) << " forwarded to ExternalIdpProvider");
+        ++record.ResponsesLeft;
+        auto request = CreateAccessServiceRequest<TEvAccessServiceAuthenticateRequest>(key, record);
+        Send(ExternalIdpProvider,
+             new TEvExternalIdpProvider::TEvAuthenticateRequest(key, record.Ticket, record.Database));
         return true;
     }
 
@@ -1197,6 +1205,37 @@ private:
 
     void Handle(NCloud::TEvAccessService::TEvAuthenticateResponse::TPtr& ev) {
         HandleIamAuthenticateResponse<TEvAccessServiceAuthenticateRequest, NCloud::TEvAccessService::TEvAuthenticateResponse>(ev);
+    }
+
+    void Handle(TEvExternalIdpProvider::TEvAuthenticateResponse::TPtr& ev) {
+        TEvExternalIdpProvider::TEvAuthenticateResponse* response = ev->Get();
+        auto& userTokens = GetDerived()->GetUserTokens();
+        auto it = userTokens.find(response->Key);
+        if (it == userTokens.end()) {
+            BLOG_ERROR("Ticket " << MaskTicket(response->Key) << " has expired during build (ExternalIdp)");
+            return;
+        }
+
+        const auto& key = it->first;
+        auto& record = it->second;
+        --record.ResponsesLeft;
+        if (response->Status == TEvExternalIdpProvider::EStatus::SUCCESS) {
+            if (response->ExpiresAt) {
+                record.ExpireTime = response->ExpiresAt;
+            }
+            TVector<NACLib::TSID> groups(response->Groups.cbegin(), response->Groups.cend());
+            SetToken(key, record, new NACLib::TUserToken({
+                .OriginalUserToken = record.Ticket,
+                .UserSID = response->User,
+                .GroupSIDs = groups,
+                .AuthType = record.GetAuthType()
+            }));
+        } else {
+            SetError(key, record, response->Error);
+        }
+        if (record.ResponsesLeft == 0) {
+            Respond(record);
+        }
     }
 
     void Handle(NCloud::TEvUserAccountService::TEvGetUserAccountResponse::TPtr& ev) {
@@ -2306,10 +2345,10 @@ protected:
             UseLoginProvider = true;
         }
 
-        if (Config.HasExternalIdp() && !Config.GetExternalIdp().GetSettings().empty()) {
+        if (Config.HasExternalIdp() && !Config.GetExternalIdp().SettingsSize() > 0) {
             BLOG_D("External IdP authentication is enabled"
-                << " Number of IdPs: " << Config.GetExternalIdp().GetSettings().size());
-            for (ssize_t idx = 0; idx < Config.GetExternalIdp().GetSettings().size(); ++idx) {
+                   << " Number of IdPs: " << Config.GetExternalIdp().SettingsSize());
+            for (size_t idx = 0; idx < Config.GetExternalIdp().SettingsSize(); ++idx) {
                 const auto& setting = Config.GetExternalIdp().GetSettings()[idx];
                 BLOG_D("IdP #" << idx
                         << " Domain: " << setting.GetDomain()
@@ -2320,6 +2359,10 @@ protected:
                         << " JwksRefreshPeriod: " << setting.GetJwksRefreshPeriod()
                         << " AllowedClockSkew: " << setting.GetAllowedClockSkew());
             }
+
+            // TODO(vlad-serikov): Implement multiple issuers in single provider
+            ExternalIdpProvider = Register(CreateExternalIdpProvider(Config.GetExternalIdp().GetSettings()[0], {}),
+                                           TMailboxType::HTSwap, AppData()->UserPoolId);
         }
     }
 
@@ -2348,6 +2391,9 @@ protected:
         }
         if (NebiusAccessServiceValidator) {
             Send(NebiusAccessServiceValidator, new TEvents::TEvPoisonPill);
+        }
+        if (ExternalIdpProvider) {
+            Send(ExternalIdpProvider, new TEvents::TEvPoisonPill);
         }
         TBase::PassAway();
     }
@@ -2390,6 +2436,7 @@ public:
             hFunc(TEvTicketParser::TEvUpdateLoginSecurityState, Handle);
             hFunc(TEvTokenManager::TEvUpdateToken, Handle);
             hFunc(TEvLdapAuthProvider::TEvEnrichGroupsResponse, Handle);
+            hFunc(TEvExternalIdpProvider::TEvAuthenticateResponse, Handle);
             hFunc(NCloud::TEvAccessService::TEvAuthenticateResponse, Handle);
             hFunc(NCloud::TEvAccessService::TEvAuthorizeResponse, Handle);
             hFunc(NCloud::TEvAccessService::TEvBulkAuthorizeResponse, Handle);

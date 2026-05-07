@@ -210,15 +210,21 @@ message TExternalIdpConfig {
         // JWT claim name to use as the list of groups (default: "groups")
         optional string GroupsClaimName = 6 [default = "groups"];
 
+        // Random period [0, Jitter] will be added to period between consecutive http requests
+        optional string Jitter = 7 [default = "30m"];
+
+        // How often to refresh discovery info from the IdP
+        optional string DiscoveryRefreshPeriod = 8 [default = "6h"];
+
         // How often to refresh the JWKS keys from the IdP
-        optional string JwksRefreshPeriod = 7 [default = "1h"];
+        optional string JwksRefreshPeriod = 9 [default = "1h"];
 
         // Allowed clock skew for JWT validation
-        optional string AllowedClockSkew = 8 [default = "5s"];
+        optional string AllowedClockSkew = 10 [default = "5s"];
 
         // Path to root CA certificate for TLS connections to the IdP
         // If is not set, global PathToRootCA will be used
-        optional string PathToRootCA = 9;
+        optional string PathToRootCA = 11;
     }
 
     repeated TExternalIdpSettings Settings = 1;
