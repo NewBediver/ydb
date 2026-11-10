@@ -8,6 +8,7 @@
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/types/credentials/credentials.h>
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/iam/iam.h>
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/iam_private/iam.h>
+#include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/secret/secret.h>
 #include <ydb/library/actors/core/actor.h>
 #include <ydb/library/actors/core/hfunc.h>
 
@@ -385,6 +386,8 @@ class TYdbProxy: public TBaseProxyActor<TYdbProxy> {
             return EnsureClient<TClient, TCommonClientSettings>(SchemeClient);
         } else if constexpr (std::is_same_v<TClient, TTableClient>) {
             return EnsureClient<TClient, TClientSettings>(TableClient);
+        } else if constexpr (std::is_same_v<TClient, NYdb::NSecret::TSecretClient>) {
+            return EnsureClient<TClient, TCommonClientSettings>(SecretClient);
         } else if constexpr (std::is_same_v<TClient, TTopicClient>) {
             return EnsureClient<TClient, TTopicClientSettings>(TopicClient);
         } else {
@@ -474,6 +477,10 @@ class TYdbProxy: public TBaseProxyActor<TYdbProxy> {
 
     void Handle(TEvYdbProxy::TEvDescribeTableRequest::TPtr& ev) {
         CallSession<TEvYdbProxy::TEvDescribeTableResponse>(ev, &TSession::DescribeTable);
+    }
+
+    void Handle(TEvYdbProxy::TEvExportSecretRequest::TPtr& ev) {
+        Call<TEvYdbProxy::TEvExportSecretResponse>(ev, &NYdb::NSecret::TSecretClient::ExportSecret);
     }
 
     void Handle(TEvYdbProxy::TEvCreateTopicRequest::TPtr& ev) {
@@ -572,6 +579,8 @@ public:
             hFunc(TEvYdbProxy::TEvCopyTablesRequest, Handle);
             hFunc(TEvYdbProxy::TEvRenameTablesRequest, Handle);
             hFunc(TEvYdbProxy::TEvDescribeTableRequest, Handle);
+            // Secret
+            hFunc(TEvYdbProxy::TEvExportSecretRequest, Handle);
             // Topic
             hFunc(TEvYdbProxy::TEvCreateTopicRequest, Handle);
             hFunc(TEvYdbProxy::TEvAlterTopicRequest, Handle);
@@ -590,6 +599,7 @@ private:
     const TCommonClientSettings CommonSettings;
     THolder<TSchemeClient> SchemeClient;
     THolder<TTableClient> TableClient;
+    THolder<NYdb::NSecret::TSecretClient> SecretClient;
     THolder<TTopicClient> TopicClient;
 
 }; // TYdbProxy

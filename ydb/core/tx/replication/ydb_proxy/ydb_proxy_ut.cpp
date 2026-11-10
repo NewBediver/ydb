@@ -454,6 +454,75 @@ Y_UNIT_TEST_SUITE(YdbProxy) {
         }
     }
 
+    Y_UNIT_TEST(ExportSecret) {
+        TEnv<true> env(TString{"root@builtin"});
+        auto& runtime = env.GetRuntime();
+        runtime.GetAppData(0).FeatureFlags.SetEnableSchemaSecrets(true);
+        runtime.GetAppData(0).AdministrationAllowedSIDs = {"root@builtin"};
+
+        NYdb::NTable::TTableClient client(env.GetDriver(), NYdb::NTable::TClientSettings().AuthToken("root@builtin"));
+        auto session = client.CreateSession().GetValueSync().GetSession();
+        const auto created = session.ExecuteSchemeQuery("CREATE SECRET `source` WITH (value = 'value');").GetValueSync();
+        UNIT_ASSERT_C(created.IsSuccess(), created.GetIssues().ToString());
+
+        const auto settings = NYdb::NScheme::TExportSecretSettings().OperationTimeout(TDuration::Seconds(30));
+        runtime.Send(new IEventHandle(env.GetYdbProxy(), env.GetSender(),
+            new TEvYdbProxy::TEvExportSecretRequest("/Root/source", "/Root/export-topic", settings), 0, 0x1234));
+        const auto exported = runtime.GrabEdgeEventRethrow<TEvYdbProxy::TEvExportSecretResponse>(
+            env.GetSender(), TDuration::Seconds(30));
+        UNIT_ASSERT(exported);
+        UNIT_ASSERT_VALUES_EQUAL(exported->Sender, env.GetYdbProxy());
+        UNIT_ASSERT_VALUES_EQUAL(exported->GetRecipientRewrite(), env.GetSender());
+        UNIT_ASSERT_VALUES_EQUAL(exported->Cookie, 0x1234);
+        UNIT_ASSERT_C(exported->Get()->Result.IsSuccess(), exported->Get()->Result.GetIssues().ToString());
+
+        const auto described = env.Send<TEvYdbProxy::TEvDescribeTopicResponse>(
+            new TEvYdbProxy::TEvDescribeTopicRequest("/Root/export-topic",
+                NYdb::NTopic::TDescribeTopicSettings().IncludeStats(true)));
+        UNIT_ASSERT_C(described->Get()->Result.IsSuccess(), described->Get()->Result.GetIssues().ToString());
+        const auto& partitions = described->Get()->Result.GetTopicDescription().GetPartitions();
+        UNIT_ASSERT_VALUES_EQUAL(partitions.size(), 1);
+        UNIT_ASSERT(partitions.front().GetPartitionStats());
+        UNIT_ASSERT_VALUES_EQUAL(partitions.front().GetPartitionStats()->GetEndOffset(), 1);
+    }
+
+    Y_UNIT_TEST(ExportSecretPropagatesSourceError) {
+        TEnv<true> env(TString{"root@builtin"});
+        auto& runtime = env.GetRuntime();
+        runtime.GetAppData(0).FeatureFlags.SetEnableSchemaSecrets(true);
+        runtime.GetAppData(0).AdministrationAllowedSIDs = {"another-admin@builtin"};
+
+        runtime.Send(new IEventHandle(env.GetYdbProxy(), env.GetSender(),
+            new TEvYdbProxy::TEvExportSecretRequest("/Root/source", "/Root/export-topic", {}), 0, 0x2345));
+        const auto exported = runtime.GrabEdgeEventRethrow<TEvYdbProxy::TEvExportSecretResponse>(
+            env.GetSender(), TDuration::Seconds(30));
+        UNIT_ASSERT(exported);
+        UNIT_ASSERT_VALUES_EQUAL(exported->Sender, env.GetYdbProxy());
+        UNIT_ASSERT_VALUES_EQUAL(exported->GetRecipientRewrite(), env.GetSender());
+        UNIT_ASSERT_VALUES_EQUAL(exported->Cookie, 0x2345);
+        UNIT_ASSERT_VALUES_EQUAL(exported->Get()->Result.GetStatus(), NYdb::EStatus::UNAUTHORIZED);
+        UNIT_ASSERT_STRING_CONTAINS(exported->Get()->Result.GetIssues().ToString(),
+            "Secret export requires a cluster administrator");
+        UNIT_ASSERT(!exported->Get()->Result.IsTransportError());
+    }
+
+    Y_UNIT_TEST(LocalSecretExportRequiresSourceConnection) {
+        TEnv env;
+        auto& runtime = env.GetRuntime();
+        const auto proxy = runtime.Register(CreateLocalYdbProxy(env.GetDatabase()));
+        runtime.Send(new IEventHandle(proxy, env.GetSender(),
+            new TEvYdbProxy::TEvExportSecretRequest("/Root/source", "/Root/export-topic", {}), 0, 0x3456));
+        const auto exported = runtime.GrabEdgeEventRethrow<TEvYdbProxy::TEvExportSecretResponse>(
+            env.GetSender(), TDuration::Seconds(30));
+        UNIT_ASSERT(exported);
+        UNIT_ASSERT_VALUES_EQUAL(exported->Sender, proxy);
+        UNIT_ASSERT_VALUES_EQUAL(exported->GetRecipientRewrite(), env.GetSender());
+        UNIT_ASSERT_VALUES_EQUAL(exported->Cookie, 0x3456);
+        UNIT_ASSERT_VALUES_EQUAL(exported->Get()->Result.GetStatus(), NYdb::EStatus::UNSUPPORTED);
+        UNIT_ASSERT_STRING_CONTAINS(exported->Get()->Result.GetIssues().ToString(),
+            "Secret export requires an explicit source connection");
+    }
+
     Y_UNIT_TEST(CreateCdcStream) {
         TEnv<false> env;
         // create table

@@ -59,6 +59,9 @@ struct TEvYdbProxy {
         EvEndTopicPartition,
         EvStartTopicReadingSession,
 
+        EvSecret = EvBegin + 3 * 100,
+        EV_REQUEST_RESPONSE(ExportSecret),
+
         EvEnd,
     };
 
@@ -297,6 +300,8 @@ struct TEvYdbProxy {
     DEFINE_GENERIC_REQUEST_RESPONSE(CopyTables, NYdb::TStatus, TVector<NYdb::NTable::TCopyItem>, NYdb::NTable::TCopyTablesSettings);
     DEFINE_GENERIC_REQUEST_RESPONSE(RenameTables, NYdb::TStatus, TVector<NYdb::NTable::TRenameItem>, NYdb::NTable::TRenameTablesSettings);
     DEFINE_GENERIC_REQUEST_RESPONSE(DescribeTable, NYdb::NTable::TDescribeTableResult, TString, NYdb::NTable::TDescribeTableSettings);
+    // Secret
+    DEFINE_GENERIC_REQUEST_RESPONSE(ExportSecret, NYdb::TStatus, TString, TString, NYdb::NScheme::TExportSecretSettings);
     // Topic
     DEFINE_GENERIC_REQUEST_RESPONSE(CreateTopic, NYdb::TStatus, TString, NYdb::NTopic::TCreateTopicSettings);
     DEFINE_GENERIC_REQUEST_RESPONSE(AlterTopic, NYdb::TStatus, TString, NYdb::NTopic::TAlterTopicSettings);
