@@ -198,6 +198,13 @@ void TLocalProxyActor::Handle(TEvYdbProxy::TEvDescribeTableRequest::TPtr& ev) {
     Send(ev->Sender, new TEvYdbProxy::TEvDescribeTableResponse(std::move(status), std::move(desc), settings), 0, ev->Cookie);
 }
 
+void TLocalProxyActor::Handle(TEvYdbProxy::TEvExportSecretRequest::TPtr& ev) {
+    NYdb::NIssue::TIssues issues;
+    issues.AddIssue("Secret export requires an explicit source connection");
+    Send(ev->Sender, new TEvYdbProxy::TEvExportSecretResponse(
+        NYdb::TStatus(NYdb::EStatus::UNSUPPORTED, std::move(issues))), 0, ev->Cookie);
+}
+
 STATEFN(TLocalProxyActor::StateWork) {
     YDB_LOG_CREATE_CONTEXT(LogPrefix,
         {"actorState", "StateWaitData"});
@@ -206,6 +213,7 @@ STATEFN(TLocalProxyActor::StateWork) {
         hFunc(TEvYdbProxy::TEvAlterTopicRequest, Handle);
         hFunc(TEvYdbProxy::TEvCommitOffsetRequest, Handle);
         hFunc(TEvYdbProxy::TEvDescribeTableRequest, Handle);
+        hFunc(TEvYdbProxy::TEvExportSecretRequest, Handle);
         hFunc(TEvYdbProxy::TEvDescribeTopicRequest, Handle);
         hFunc(TEvYdbProxy::TEvDescribePathRequest, Handle);
         sFunc(TEvents::TEvPoison, PassAway);
